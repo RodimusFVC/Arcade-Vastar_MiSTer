@@ -82,8 +82,17 @@ localparam CONF_STR = {
 	"DIP;",
 	"-;",
 	"P2,Screen Centering;",
-	"P2O36,H Center,0,-1,-2,-3,-4,-5,-6,-7,+7,+6,+5,+4,+3,+2,+1;",
-	"P2O7A,V Center,0,-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11,-12;",
+	// DIAG-REVERT-2026-09-01: labels now match the sign-extended h_center in
+	// Vastar_CPU.sv. Old list had the signs inverted (index 1 read "-1" but added +1)
+	// and only 15 entries for a 4-bit field, leaving index 15 unreachable.
+	// Original, uncomment to restore:
+	// "P2O36,H Center,0,-1,-2,-3,-4,-5,-6,-7,+7,+6,+5,+4,+3,+2,+1;",
+	"P2O36,H Center,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;",   // DIAG
+	// DIAG-REVERT-2026-09-01: same for v_center. Old list was 13 all-negative labels
+	// for a 4-bit field and every one of them shifted the image the same direction.
+	// Original, uncomment to restore:
+	// "P2O7A,V Center,0,-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11,-12;",
+	"P2O7A,V Center,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;",   // DIAG
 	"-;",
 	"R0,Reset;",
 	"J1,Fire,Fire2,Start P1,Start P2,Coin,Pause;",

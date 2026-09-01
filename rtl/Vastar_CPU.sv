@@ -7,7 +7,8 @@
 //  Hardware: Z80 CPU1 + Z80 CPU2 @ 3.072 MHz (XTAL 18.432 / 6)
 //            AY-3-8910 @ 1.536 MHz (18.432 / 12)
 //  Screen: 288x264 total, visible 256x224 (lines 17-240), ~60.6 Hz
-//          (pixel clock 4.608 MHz = 18.432 XTAL / 4)
+//          (pixel clock 6.144 MHz = 18.432 XTAL / 3, htotal 384)
+//          DIAG-REVERT-2026-09-01: was 4.608 MHz = XTAL / 4 with htotal 288
 //
 //============================================================================
 
@@ -42,9 +43,45 @@ module Vastar_CPU
 
 //------------------------------------------------------- Clock enables -------------------------------------------------------//
 
-// Pixel clock: 49.152 MHz * 3/32 = 4.608 MHz exactly (= 18.432 XTAL / 4)
+// ==============================================================================
+// DIAG-REVERT-2026-09-01 -- ANALOG-VGA RASTER FIX (provisional, awaiting HW report)
+//
+// SYMPTOM: on a 15 kHz arcade monitor via the analog I/O board the OSD renders
+// crisp and stable but the game area is saturated colour garbage. HDMI is perfect.
+// Gyrodine (Kyugo, same Orca board family) is fine on the same monitor.
+//
+// CAUSE: the old raster used a XTAL/4 dot clock (4.608 MHz) with a short htotal
+// (288) chosen to land on MAME's 60.58 Hz. Frame rate and line rate come out
+// right, but only 32 of the 288 pixels are blanking -- 89% of every line is
+// active video, and the porches are front 1.74 us / sync 3.47 us / back 1.74 us
+// against the ~1.5 / 4.7 / 5.7 us a 15 kHz tube expects. HDMI never sees this
+// because ascal re-times everything off DE; the analog output hands the porches
+// straight to the monitor, which locks (hence the clean OSD) but has no back
+// porch for its clamp to settle on and no room for the active window.
+//
+// Real Orca/Kyugo hardware clocks video at XTAL/3, not XTAL/4 -- MAME has raw
+// timing for the sister board (kyugo.cpp:946):
+//     screen.set_raw(18.432_MHz_XTAL/3, 396, 0, 288, 260, 16, 240)
+// but only legacy set_refresh_hz(60.58) for Vastar (vastar.cpp:492), so this
+// core's raster was invented rather than derived.
+//
+// FIX: 6.144 MHz dot clock with htotal 384. 384 x 264 @ 6.144 MHz = 60.61 Hz and
+// 16.0 kHz -- IDENTICAL to the old raster, and every displayed pixel is
+// unchanged. Only the blanking widens, 32 px -> 128 px. HDMI output is
+// unaffected by construction.
+//
+// COUPLED EDITS (all tagged DIAG-REVERT-2026-09-01, all must move together):
+//   this pix_cen divider, the htotal wrap at base_h_cnt==383, the hs_start/hs_end
+//   window, and the double-buffer page flip at base_h_cnt==383.
+//
+// TO REVERT: uncomment the three original lines below, delete the DIAG lines.
+// // Pixel clock: 49.152 MHz * 3/32 = 4.608 MHz exactly (= 18.432 XTAL / 4)
+// // wire [1:0] pix_cen_o;
+// // jtframe_frac_cen #(2) pix_cen (.clk(clk_49m), .n(10'd3), .m(10'd32), .cen(pix_cen_o), .cenb());
+// ==============================================================================
+// DIAG: Pixel clock 49.152 MHz * 4/32 = 6.144 MHz exactly (= 18.432 XTAL / 3)
 wire [1:0] pix_cen_o;
-jtframe_frac_cen #(2) pix_cen (.clk(clk_49m), .n(10'd3), .m(10'd32), .cen(pix_cen_o), .cenb());
+jtframe_frac_cen #(2) pix_cen (.clk(clk_49m), .n(10'd4), .m(10'd32), .cen(pix_cen_o), .cenb());
 wire cen_pix = pix_cen_o[0];
 assign ce_pix = cen_pix;
 
@@ -71,7 +108,9 @@ assign v_cnt_rot = { v_cnt[8],      v_cnt[7:0]      ^ {8{flip_screen}} };
 
 always_ff @(posedge clk_49m) begin
 	if (cen_pix) begin
-		if (base_h_cnt == 9'd287) begin
+		// DIAG-REVERT-2026-09-01: original below, uncomment to restore
+		// if (base_h_cnt == 9'd287) begin
+		if (base_h_cnt == 9'd383) begin   // DIAG: htotal 288 -> 384 (see pix_cen block)
 			base_h_cnt <= 9'd0;
 			v_cnt <= (v_cnt == 9'd263) ? 9'd0 : v_cnt + 9'd1;
 		end else begin
@@ -85,9 +124,40 @@ wire vblk = (v_cnt < 9'd17) | (v_cnt >= 9'd241);
 assign video_hblank = hblk;
 assign video_vblank = vblk;
 
-wire [8:0] hs_start = 9'd264 + {5'd0, h_center};
-wire [8:0] hs_end   = hs_start + 9'd16;
-wire [8:0] vs_start = 9'd248 + {5'd0, v_center};
+// DIAG-REVERT-2026-09-01: hsync window moved into the widened blanking region.
+// Old raster (htotal 288): active 0-255, front porch 8 px (1.74 us), sync 16 px
+// (3.47 us), back porch 8 px (1.74 us) -- the short back porch is what the CRT's
+// clamp had nothing to settle on.
+// New raster (htotal 384): active 0-255, front porch 24 px (3.9 us), sync 16 px
+// (2.6 us), back porch 88 px (14.3 us). The sync width and the back porch are
+// deliberately set to the SAME PIXEL COUNTS as Gyrodine (Kyugo: htotal 396,
+// hs 292..307, back porch 88 px), which is field-proven on this reporter's
+// monitor. Residual horizontal position is trimmed by the Screen Centering OSD
+// option (h_center shifts the sync later, which pulls the image left).
+// Originals, uncomment to restore:
+// wire [8:0] hs_start = 9'd264 + {5'd0, h_center};
+// wire [8:0] hs_end   = hs_start + 9'd16;
+// DIAG-REVERT-2026-09-01: Screen Centering was one-directional. h_center is a 4-bit
+// OSD field that was ZERO-extended, so every setting added +N pixels -- the menu's
+// negative labels were cosmetic only and the image could never be shifted the other
+// way. Sign-extending makes the field two's complement: 0, +1..+7, then -8..-1, which
+// is what the CONF_STR label list in Arcade-Vastar.sv now matches.
+// hs_start range 272..287 (was 280..295); hs_end = +16 -> 288..303, well inside
+// htotal 384, so every setting stays in the blanking region.
+// Original, uncomment to restore:
+// wire [8:0] hs_start = 9'd280 + {5'd0, h_center};
+wire [8:0] hs_start = 9'd280 + {{5{h_center[3]}}, h_center};   // DIAG: sign-extended, +-8 px
+wire [8:0] hs_end   = hs_start + 9'd16;            // DIAG: sync width unchanged (16 px)
+// DIAG-REVERT-2026-09-01: same sign-extend for the vertical axis.
+// Base moved 248 -> 249 so the full -8 setting cannot land vsync on a visible line:
+// vblank is v_cnt 241..263, so vs_start must stay >= 241 for the 4-line pulse to fit.
+//   base 248 sign-extended -> 240..255  (240 puts vsync on the last visible line)
+//   base 249 sign-extended -> 241..256  (all settings safely inside vblank)
+// Cost is a 1-line downward shift of the DEFAULT vsync position on the analog output
+// only; HDMI is unaffected because ascal frames off DE, not vsync position.
+// Original, uncomment to restore:
+// wire [8:0] vs_start = 9'd248 + {5'd0, v_center};
+wire [8:0] vs_start = 9'd249 + {{5{v_center[3]}}, v_center};   // DIAG: sign-extended, +-8 lines
 wire [8:0] vs_end   = vs_start + 9'd4;
 assign video_hsync = (h_cnt_rot >= hs_start && h_cnt_rot < hs_end);
 assign video_vsync = (v_cnt_rot >= vs_start && v_cnt_rot < vs_end);
@@ -366,7 +436,8 @@ reg [2:0] r_layer; // 0=fg, 1=bg0, 2=bg1
 // per-tile vertical flip beyond their own flipY bit.
 //
 // This line, the double-buffered line buffers, and the end-of-hblank page flip
-// (base_h_cnt == 287, in its own always_ff below) form a COUPLED TRIPLE that
+// (base_h_cnt == 383, in its own always_ff below) form a COUPLED TRIPLE that
+// (DIAG-REVERT-2026-09-01: that constant was 287 before the htotal change)
 // eliminates line tearing. All three must move together: rnext must equal
 // v_cnt_rot with no +1, and the page flip must happen at end-of-hblank, not
 // mid-visible. Changing any one alone reintroduces a torn/duplicated line.
@@ -419,8 +490,11 @@ always_ff @(posedge clk_49m) begin
 	end else if (rstate == S_IDLE) begin
 		wait_cycle <= 0;
 		// Trigger render at start of line (base_h_cnt==0). Render takes ~156 cen_pix
-		// ticks out of 288 available, so it always completes well before end-of-line.
-		// Page flip is handled separately at base_h_cnt==287 (see below).
+		// ticks out of 384 available, so it always completes well before end-of-line.
+		// Page flip is handled separately at base_h_cnt==383 (see below).
+		// DIAG-REVERT-2026-09-01: those two numbers were 288 and 287 before the
+		// htotal change; the render budget only got larger, so the timing margin
+		// here improved rather than shrank.
 		if (cen_pix && base_h_cnt == 9'd0 && v_cnt_rot >= 9'd15 && v_cnt_rot < 9'd241) begin
 			rx <= 0;
 			rstate <= S_FG_CODE;
@@ -968,7 +1042,7 @@ always_ff @(posedge clk_49m) begin
 	end
 end
 
-// Double-buffer page flip — fires at end-of-line (base_h_cnt==287, fully in hblank),
+// Double-buffer page flip — fires at end-of-line (base_h_cnt==383, fully in hblank; DIAG-REVERT-2026-09-01: was 287),
 // only on lines that had a render. Render completes ~halfway through the line,
 // so it's guaranteed done well before this point. Sole driver of lb_page.
 // Part of the tear-fix coupled triple documented at rnext/rline above — do not
@@ -976,7 +1050,9 @@ end
 always_ff @(posedge clk_49m) begin
 	if (!reset) begin
 		lb_page <= 1'b0;
-	end else if (cen_pix && base_h_cnt == 9'd287 && v_cnt_rot >= 9'd15 && v_cnt_rot < 9'd241) begin
+	// DIAG-REVERT-2026-09-01: original below, uncomment to restore
+	// end else if (cen_pix && base_h_cnt == 9'd287 && v_cnt_rot >= 9'd15 && v_cnt_rot < 9'd241) begin
+	end else if (cen_pix && base_h_cnt == 9'd383 && v_cnt_rot >= 9'd15 && v_cnt_rot < 9'd241) begin  // DIAG: end-of-line moved with htotal
 		lb_page <= ~lb_page;
 	end
 end
