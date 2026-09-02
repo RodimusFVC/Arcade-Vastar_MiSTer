@@ -69,29 +69,24 @@ assign VIDEO_ARY = status[12] ? ((!ar) ? 12'd3 : 12'd0) : ((!ar) ? 12'd4 : 12'd0
 `include "build_id.v"
 localparam CONF_STR = {
 	"VASTAR;;",
-	"ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
-	"OC,Orientation,Vert,Horz;",
-    "OB,Flip Vertical,Off,On;",
-	"OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
-	// DIAG-REVERT-2026-09-01: centering moved up here with the other screen options.
-	// This core has no Video Options submenu -- its video entries are root-level -- so
-	// they sit directly after Scandoubler Fx rather than in a submenu of their own.
-	// Labels match the sign-extended h_center/v_center in Vastar_CPU.sv; the old lists
-	// had the signs inverted (index 1 read "-1" but added +1) and were short (15 and 13
-	// entries for 4-bit fields), leaving the top indices unreachable.
-	// Originals, uncomment to restore (they sat under a "P2,Screen Centering;" header
-	// below the DIP block, which is also removed):
-	// "P2O36,H Center,0,-1,-2,-3,-4,-5,-6,-7,+7,+6,+5,+4,+3,+2,+1;",
-	// "P2O7A,V Center,0,-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11,-12;",
-	"O36,H Center,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;",
-	"O7A,V Center,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"P1,Video Options;",
+	"P1ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
+	"P1OC,Orientation,Vert,Horz;",
+	"P1OB,HDMI Flip,Off,On;",
+	// CRT Flip disabled: toggling it has no effect on this core.
+	// "P1OM,CRT Flip,Off,On;",
+	"P1OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"-;",
 	"H1OR,Autosave Hiscores,Off,On;",
-	"P1,Pause Options;",
-	"P1OP,Pause when OSD is open,On,Off;",
-	"P1OQ,Dim video after 10s,On,Off;",
+	"P2,Pause Options;",
+	"P2OP,Pause when OSD is open,On,Off;",
+	"P2OQ,Dim video after 10s,On,Off;",
 	"-;",
 	"DIP;",
+	"-;",
+	"P3,Screen Centering;",
+	"P3O36,H Center,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"P3O7A,V Center,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;",
 	"-;",
 	"R0,Reset;",
 	"J1,Fire,Fire2,Start P1,Start P2,Coin,Pause;",
@@ -364,6 +359,7 @@ Vastar vastar_inst
 	.dip_sw({dip_sw[1], dip_sw[0]}),
 
     .rot_flip(rot_flip),
+	.crt_flip(status[22]),
 
 	.h_center(status[6:3]),
 	.v_center(status[10:7]),

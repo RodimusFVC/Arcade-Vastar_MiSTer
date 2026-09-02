@@ -39,6 +39,7 @@ module Vastar
 	input         [15:0] dip_sw,
 
     input                rot_flip,
+	input                crt_flip,      // OSD 180 degree flip
 
 	// Video outputs
 	output               video_hsync, video_vsync, video_csync,
@@ -116,6 +117,7 @@ Vastar_CPU main_pcb
 	.dip_sw(dip_sw),
 
     .rot_flip(rot_flip),
+	.crt_flip(crt_flip),
 
 	.sound(sound),
 
