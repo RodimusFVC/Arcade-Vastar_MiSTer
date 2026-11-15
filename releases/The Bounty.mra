@@ -28,7 +28,6 @@
 	<button_names>Fire,Button 2</button_names>
 
 	<switches default="00,40">
-		<!-- DSW0 (6081); bit 6 is button 2 -->
 		<dip bits="0"     name="Unknown" ids="Off,On"/>
 		<dip bits="1"     name="Unknown" ids="Off,On"/>
 		<dip bits="2"     name="Unknown" ids="Off,On"/>
@@ -36,7 +35,6 @@
 		<dip bits="4"     name="Unknown" ids="Off,On"/>
 		<dip bits="5"     name="Unknown" ids="Off,On"/>
 		<dip bits="7"     name="Unknown" ids="Off,On"/>
-		<!-- DSW1 (6082) -->
 		<dip bits="8,9"   name="Lives" ids="3,4,5,6"/>
 		<dip bits="10,11" name="Coinage" ids="1C/1C,1C/2C,2C/1C,Free Play"/>
 		<dip bits="12,13" name="Bonus Life" ids="20k 100k,40k 100k,20k 200k,40k 200k"/>
@@ -44,8 +42,7 @@
 		<dip bits="15"    name="Unknown" ids="Off,On"/>
 	</switches>
 
-	<!-- Index 0: Zodiack board main ROM (C000-CFFF stored at 5000), audio ROM, empty Vastar video regions, then the Orca
-	     OVG-40c video board -->
+	<!-- Index 0: ROM -->
 	<rom index="0" md5="none" zip="bounty.zip">
 		<part crc="f495b19d" name="1.4f"/>
 		<part crc="fa3086c3" name="3.4k"/>
@@ -63,9 +60,7 @@
 		<part crc="465e31d4" name="mb7051.2b"/>
 	</rom>
 
-	<!-- Index 1: core_config (bit1 OVG-40c video, bit2 Zodiack CPU board, bit3 percuss, bit4 horizontal ROT180), then the IN0 / IN1 / DSW0 input map, one control id
-	     per bit (rtl top level: 1-4 P1 U/D/L/R, 5 P1 button 1, 9-12 P2 U/D/L/R, 13 P2 button 1, 17 / 18 coin 1 / 2,
-	     19 / 20 start 1 / 2, 0 none) -->
+	<!-- Index 1: Config -->
 	<rom index="1">
 		<part>
 		1E

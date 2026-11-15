@@ -25,10 +25,9 @@
 	<joystick>8-way</joystick>
 	<special_controls></special_controls>
 	<num_buttons>2</num_buttons>
-	<button_names>Fire,Not Used</button_names>
+	<button_names>Fire,-</button_names>
 
 	<switches default="00,40">
-		<!-- DSW1 (6082) -->
 		<dip bits="8,9"   name="Lives" ids="3,4,5,6"/>
 		<dip bits="10,12" name="Coinage" ids="1C/1C,1C/2C,1C/3C,1C/4C,1C/6C,2C/1C,2C/1C 3C/2C,Free Play"/>
 		<dip bits="13"    name="Bonus Life" ids="20000 50000,40000 70000"/>
@@ -36,8 +35,7 @@
 		<dip bits="15"    name="Unknown" ids="Off,On"/>
 	</switches>
 
-	<!-- Index 0: Zodiack board main ROM (C000-CFFF stored at 5000), audio ROM, empty Vastar video regions, then the Orca
-	     OVG-40c video board -->
+	<!-- Index 0: ROM -->
 	<rom index="0" md5="none" zip="zodiack.zip">
 		<part crc="a2125e99" name="ovg30c.2"/>
 		<part crc="aee2b77f" name="ovg30c.3"/>
@@ -54,9 +52,7 @@
 		<part crc="21f77ec7" name="ovg40c.2b"/>
 	</rom>
 
-	<!-- Index 1: core_config (bit1 OVG-40c video, bit2 Zodiack CPU board), then the IN0 / IN1 input map, one control id
-	     per bit (rtl top level: 1-4 P1 U/D/L/R, 5 P1 button 1, 9-12 P2 U/D/L/R, 13 P2 button 1, 17 / 18 coin 1 / 2,
-	     19 / 20 start 1 / 2, 0 none) -->
+	<!-- Index 1: Config -->
 	<rom index="1">
 		<part>
 		06

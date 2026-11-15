@@ -1,15 +1,5 @@
-//============================================================================
-//
-//  Vastar CPU board — dual Z80 system, video rendering, and sound
+// Based on MAME vastar.cpp, vastar_viddev.cpp, zodiack.cpp (Allard van der Bas, Zsolt Vasvari, BSD-3-Clause)
 //  Copyright (C) 2026 Rodimus
-//
-//  MAME reference: vastar.cpp, vastar_viddev.cpp, zodiack.cpp
-//  Hardware: Z80 CPU1 + Z80 CPU2 @ 3.072 MHz (XTAL 18.432 / 6)
-//            AY-3-8910 @ 1.536 MHz (18.432 / 12)
-//  Screen: 288x264 total, visible 256x224 (lines 17-240), ~60.6 Hz
-//          (pixel clock 6.144 MHz = 18.432 XTAL / 3, htotal 384)
-//
-//============================================================================
 
 module Vastar_CPU
 (
@@ -24,13 +14,13 @@ module Vastar_CPU
 	input   [7:0] sys_controls,
 	input  [15:0] dip_sw,
     input         rot_flip,
-	input         ovg,           // Orca OVG-40c video board instead of the Vastar one (Dog Fight prototype)
-	input         zod,           // Zodiack CPU / audio board instead of the Vastar one
-	input   [7:0] zin0, zin1,    // its IN0 / IN1 (6083 / 6084), assembled by the top level from the MRA input map
-	input   [7:0] zin2,          // controls ORed into DSW0 (6081)
-	input         percuss,       // OVG-40c sprites / bullets follow the flip in Y (Percussor hardware)
-	input         horz,          // horizontal game rotated 180 (The Bounty): OVG draws like the Vastar board
-	input         crt_flip,      // OSD 180 degree flip
+	input         ovg,
+	input         zod,
+	input   [7:0] zin0, zin1,
+	input   [7:0] zin2,
+	input         percuss,
+	input         horz,
+	input         crt_flip,
 	output signed [15:0] sound,
 	input   [3:0] h_center, v_center,
 	input         pause,
@@ -39,13 +29,11 @@ module Vastar_CPU
 	output  [7:0] hs_data_out,
 	input         hs_write,
 
-	// shared CPU / sound chip pool (rtl/vastar_dispatcher.sv)
-	output chip_pool_pkg::z80r_i_t [1:0] z80_i,   // 0 main, 1 sub (Zodiack: audio)
+	output chip_pool_pkg::z80r_i_t [1:0] z80_i,
 	input  chip_pool_pkg::z80r_o_t [1:0] z80_o,
 	output chip_pool_pkg::ayr_i_t        ay_0_i,
 	input  chip_pool_pkg::ayio_o_t       ay_0_o,
 
-	// shared ROM blocks, read ports
 	output [14:0] main_rom_a,
 	input   [7:0] main_rom_d,
 	output [12:0] sub_rom_a,
@@ -56,31 +44,25 @@ module Vastar_CPU
 	input   [7:0] bgtile0_rom_d,
 	output [12:0] bgtile1_rom_a,
 	input   [7:0] bgtile1_rom_d,
-	output [12:0] sprite_rom_a,       // sprite planes 0 / 1, read together
+	output [12:0] sprite_rom_a,
 	input   [7:0] sprite0_rom_d,
 	input   [7:0] sprite1_rom_d,
-	output  [7:0] prom_a,             // colour PROMs R / G / B, read together
+	output  [7:0] prom_a,
 	input   [7:0] prom_r_d,
 	input   [7:0] prom_g_d,
 	input   [7:0] prom_b_d,
-	output  [7:0] prom_unk_a,         // tbp24s10.8n, function unknown (see the dispatcher)
+	output  [7:0] prom_unk_a,
 	input   [7:0] prom_unk_d,
 	output [13:0] ovg_gfx_a,
 	input   [7:0] ovg_gfx_d,
 	output  [5:0] ovg_prom_a,
 	input   [7:0] ovg_prom_d,
 
-	// board RAM pool
 	output ram_pool_pkg::pram_i_t [6:0] pr_i,
 	input  ram_pool_pkg::pram_o_t [6:0] pr_o
 );
 
-//------------------------------------------------------- Clock enables -------------------------------------------------------//
-
-// Pixel clock 49.152 MHz * 4/32 = 6.144 MHz exactly (= 18.432 XTAL / 3).
-// htotal 384 -> 60.61 Hz / 16.0 kHz with 15 kHz-safe porches. The dot clock, the
-// htotal wrap, the hsync window and the double-buffer page flip are coupled and
-// must move together.
+// dot clock, htotal wrap, hsync window and page flip are coupled: change them together
 wire [1:0] pix_cen_o;
 jtframe_frac_cen #(2) pix_cen (.clk(clk_49m), .n(10'd4), .m(10'd32), .cen(pix_cen_o), .cenb());
 wire cen_pix = pix_cen_o[0];
@@ -91,10 +73,8 @@ always_ff @(posedge clk_49m) cpu_div <= cpu_div + 4'd1;
 wire cen_cpu = (cpu_div == 4'd0);
 
 reg ay_toggle = 1'b0;
-always_ff @(posedge clk_49m) if (cen_cpu) ay_toggle <= ~ay_toggle;  // divide cen_cpu by 2
-wire cen_ay = cen_cpu & ~ay_toggle & ~pause;  // AY clock enable: cen_cpu / 2 = 1.536 MHz
-
-//-------------------------------------------------------- Video timing --------------------------------------------------------//
+always_ff @(posedge clk_49m) if (cen_cpu) ay_toggle <= ~ay_toggle;
+wire cen_ay = cen_cpu & ~ay_toggle & ~pause;
 
 reg [8:0] base_h_cnt = 9'd0;
 reg [8:0] v_cnt      = 9'd0;
@@ -102,8 +82,6 @@ reg [8:0] v_cnt      = 9'd0;
 wire [8:0] h_cnt_rot;
 wire [8:0] v_cnt_rot;
 
-// Mirror the raster by XORing the low bits of the counters with flip_screen
-// (cheaper than a subtractor); the MSB (frame/line parity) is passed through.
 assign h_cnt_rot = { base_h_cnt[8], base_h_cnt[7:0] ^ {8{flip_screen}} };
 assign v_cnt_rot = { v_cnt[8],      v_cnt[7:0]      ^ {8{flip_screen}} };
 
@@ -123,26 +101,17 @@ wire vblk = (v_cnt < 9'd17) | (v_cnt >= 9'd241);
 assign video_hblank = hblk;
 assign video_vblank = vblk;
 
-// Sync geometry matches Gyrodine (Kyugo) pixel-for-pixel, which is field-proven
-// on a 15 kHz tube: active 0-255, front porch 24 px, sync 16 px, back porch 88 px.
-// h_center / v_center are 4-bit two's complement (0, +1..+7, -8..-1) and are
-// sign-extended so the image shifts both ways; the CONF_STR labels match.
-// vs_start base is 249 rather than 248 so the full -8 setting still lands inside
-// vblank (v_cnt 241..263).
 wire [8:0] hs_start = 9'd280 + {{5{h_center[3]}}, h_center};
 wire [8:0] hs_end   = hs_start + 9'd16;
 wire [8:0] vs_start = 9'd249 + {{5{v_center[3]}}, v_center};
 wire [8:0] vs_end   = vs_start + 9'd4;
-// Syncs come from the UNflipped counters: with flip_screen set, h_cnt_rot never reaches 280-295 (no hsync at all)
-// and v_cnt_rot moves vsync out of place. Only the render addressing is mirrored.
+// syncs from the unflipped counters: the flipped count never reaches the hsync window
 assign video_hsync = (base_h_cnt >= hs_start && base_h_cnt < hs_end);
 assign video_vsync = (v_cnt >= vs_start && v_cnt < vs_end);
 assign video_csync = ~(video_hsync ^ video_vsync);
 
-//------------------------------------------------------- CPU1 — Main ---------------------------------------------------------//
-
 wire [15:0] cpu1_A;
-reg         z_irq = 1'b0, z_nmi_en = 1'b0;   // Zodiack board main IRQ (held until acknowledged) / NMI enable
+reg         z_irq = 1'b0, z_nmi_en = 1'b0;
 wire [7:0]  cpu1_Dout;
 wire        cpu1_WR_n, cpu1_RD_n, cpu1_MREQ_n, cpu1_IORQ_n, cpu1_M1_n, cpu1_RFSH_n;
 
@@ -157,19 +126,14 @@ always_ff @(posedge clk_49m) begin
 	else begin vblk_prev <= vblk; cpu1_nmi <= (vblk && !vblk_prev && (zod ? z_nmi_en : nmi_mask)); end
 end
 
-//-------------------------------------------------- CPU1 Address Decoding ----------------------------------------------------//
-
 wire cpu1_mem_valid = ~cpu1_MREQ_n & cpu1_RFSH_n;
 wire cs_rom      = cpu1_mem_valid & ~zod & ~cpu1_A[15];
-// the OVG-40c board (Dog Fight prototype) maps its own RAMs at 9000 / A000 / B000 instead of these
 wire cs_bg1      = cpu1_mem_valid & ~ovg & ((cpu1_A[15:12] == 4'h8) | (cpu1_A[15:12] == 4'hA));
 wire cs_bg0      = cpu1_mem_valid & ~ovg & ((cpu1_A[15:12] == 4'h9) | (cpu1_A[15:12] == 4'hB));
 wire cs_priority = cpu1_mem_valid & ~ovg & (cpu1_A[15:0] == 16'hC000);
 wire cs_fgvram   = cpu1_mem_valid & ~ovg & (cpu1_A[15:12] == 4'hC) & (cpu1_A[11:10] != 2'b00);
 wire cs_watchdog = cpu1_mem_valid & (cpu1_A[15:12] == 4'hE);
 wire cs_shared   = cpu1_mem_valid & ~zod & (cpu1_A[15:11] == 5'b11110);
-// Zodiack board main map: ROM 0000-4FFF + C000-CFFF (stored at 5000), RAM 5800-5FFF, DSW0 / DSW1 /
-// IN0 / IN1 at 6081-6084, sound latches 6090, NMI mask 7100, OVG flip 7200, IRQ mask 8000; OVG RAMs as Dog Fight
 wire cs_zrom     = cpu1_mem_valid & zod & (cpu1_A < 16'h5000 || cpu1_A[15:12] == 4'hC);
 wire cs_zram     = cpu1_mem_valid & zod & (cpu1_A[15:11] == 5'b01011);
 wire cs_zio      = cpu1_mem_valid & zod & (cpu1_A[15:8] == 8'h60);
@@ -181,19 +145,12 @@ always_ff @(posedge clk_49m) begin
 	else if (cen_cpu && cs_mainlatch) mainlatch[cpu1_A[2:0]] <= cpu1_Dout[0];
 end
 wire nmi_mask    = mainlatch[0];
-// rot_flip, crt_flip and game_flip are not interchangeable:
-//   rot_flip     screen-rotation flag per game (Vastar 0, Planet Probe 1)
-//   crt_flip     OSD 180 degree flip: raster mirror only, kept out of game_flip so sprites are not flipped twice
-//   game_flip    rot_flip ^ the game's flip latch (mainlatch[1]); it inverts each sprite's flip x / y (gating that on
-//                rot_flip alone breaks Planet Probe's sprites). On the OVG-40c board the latch flips its tilemaps instead.
 wire game_flip   = rot_flip ^ (mainlatch[1] & ~ovg);
 wire flip_screen = game_flip ^ crt_flip;
-wire cpu2_rst    = ~mainlatch[2] & ~zod;   // the Zodiack audio CPU has no reset latch
-
-//------------------------------------------------------- CPU2 — Sub ----------------------------------------------------------//
+wire cpu2_rst    = ~mainlatch[2] & ~zod;
 
 wire [15:0] cpu2_A;
-reg         z_pend = 1'b0, z_snmi = 1'b0;   // Zodiack: sound latch pending (audio IRQ), audio NMI pulse
+reg         z_pend = 1'b0, z_snmi = 1'b0;
 wire [7:0]  cpu2_Dout;
 wire        cpu2_WR_n, cpu2_RD_n, cpu2_MREQ_n, cpu2_IORQ_n, cpu2_M1_n, cpu2_RFSH_n;
 
@@ -218,15 +175,12 @@ wire cs2_shared = cpu2_mem_valid & ~zod & (cpu2_A[15:11] == 5'b01000);
 wire cs2_p2     = cpu2_mem_valid & ~zod & (cpu2_A[15:0] == 16'h8000);
 wire cs2_p1     = cpu2_mem_valid & ~zod & (cpu2_A[15:0] == 16'h8040);
 wire cs2_system = cpu2_mem_valid & ~zod & (cpu2_A[15:0] == 16'h8080);
-// Zodiack audio CPU map: ROM 0000-1FFF, RAM 2000-23FF, NMI enable 4000, sound latches 6000; AY on I/O 00 / 01
 wire cs2_zram   = cpu2_mem_valid & zod & (cpu2_A[15:10] == 6'b001000);
 wire cs2_zlat   = cpu2_mem_valid & zod & (cpu2_A[15:0] == 16'h6000);
 wire cs2_znmi   = cpu2_mem_valid & zod & (cpu2_A[15:0] == 16'h4000);
 wire cs2_ay_addr = ~cpu2_IORQ_n & ~cpu2_WR_n & (cpu2_A[3:0] == 4'h0);
 wire cs2_ay_wr   = ~cpu2_IORQ_n & ~cpu2_WR_n & (cpu2_A[3:0] == 4'h1);
 wire cs2_ay_rd   = ~cpu2_IORQ_n & ~cpu2_RD_n & (cpu2_A[3:0] == 4'h2);
-
-//---------------------------------------------------------- ROMs -------------------------------------------------------------//
 
 wire [7:0] main_rom_D;
 assign main_rom_a = zod && cpu1_A[15] ? {3'b101, cpu1_A[11:0]} : cpu1_A[14:0];
@@ -236,13 +190,9 @@ wire [7:0] sub_rom_D;
 assign sub_rom_a = cpu2_A[12:0];
 assign sub_rom_D = sub_rom_d;
 
-//------------------------------------------------------- VRAM ---------------------------------------------------------------//
-
-// board RAM pool: blocks 0-2 = Vastar video RAMs or the OVG-40c obj / fg / bg RAMs, 3 = CPU-shared RAM or the Zodiack
-// main RAM, 4 = hiscore copy, 5 = Zodiack audio RAM, 6 = OVG-40c line buffer
-ram_pool_pkg::pram_i_t [3:0] vs_pr_i;                 // Vastar board side of blocks 0-3
-ram_pool_pkg::pram_i_t [2:0] ovg_pr_i;                // OVG-40c side of blocks 0-2
-ram_pool_pkg::pram_i_t       z_pr_i;                  // Zodiack side of block 3
+ram_pool_pkg::pram_i_t [3:0] vs_pr_i;
+ram_pool_pkg::pram_i_t [2:0] ovg_pr_i;
+ram_pool_pkg::pram_i_t       z_pr_i;
 assign pr_i[0] = ovg ? ovg_pr_i[0] : vs_pr_i[0];
 assign pr_i[1] = ovg ? ovg_pr_i[1] : vs_pr_i[1];
 assign pr_i[2] = ovg ? ovg_pr_i[2] : vs_pr_i[2];
@@ -255,37 +205,37 @@ wire [2:0] hs_bank = rot_flip ? 3'b011 : 3'b001;
 
 wire [7:0] bg1_vram_D, bg1_vram_rD;
 reg [11:0] bg1_raddr;
-assign vs_pr_i[0].a_addr = {3'd0, cpu1_A[11:0]}; assign vs_pr_i[0].a_d = cpu1_Dout; assign vs_pr_i[0].a_we = cs_bg1 & ~cpu1_WR_n;
-assign vs_pr_i[0].b_addr = {3'd0, bg1_raddr}; assign vs_pr_i[0].b_d = 8'd0; assign vs_pr_i[0].b_we = 1'b0;
+assign vs_pr_i[0].a_addr = {4'd0, cpu1_A[11:0]}; assign vs_pr_i[0].a_d = cpu1_Dout; assign vs_pr_i[0].a_we = cs_bg1 & ~cpu1_WR_n;
+assign vs_pr_i[0].b_addr = {4'd0, bg1_raddr}; assign vs_pr_i[0].b_d = 8'd0; assign vs_pr_i[0].b_we = 1'b0;
 assign bg1_vram_D = pr_o[0].a_q;
 assign bg1_vram_rD = pr_o[0].b_q;
 
 wire [7:0] bg0_vram_D, bg0_vram_rD;
 reg [11:0] bg0_raddr;
-assign vs_pr_i[1].a_addr = {3'd0, cpu1_A[11:0]}; assign vs_pr_i[1].a_d = cpu1_Dout; assign vs_pr_i[1].a_we = cs_bg0 & ~cpu1_WR_n;
-assign vs_pr_i[1].b_addr = {3'd0, bg0_raddr}; assign vs_pr_i[1].b_d = 8'd0; assign vs_pr_i[1].b_we = 1'b0;
+assign vs_pr_i[1].a_addr = {4'd0, cpu1_A[11:0]}; assign vs_pr_i[1].a_d = cpu1_Dout; assign vs_pr_i[1].a_we = cs_bg0 & ~cpu1_WR_n;
+assign vs_pr_i[1].b_addr = {4'd0, bg0_raddr}; assign vs_pr_i[1].b_d = 8'd0; assign vs_pr_i[1].b_we = 1'b0;
 assign bg0_vram_D = pr_o[1].a_q;
 assign bg0_vram_rD = pr_o[1].b_q;
 
 wire [7:0] fg_vram_D, fg_vram_rD;
 reg [11:0] fg_raddr;
-assign vs_pr_i[2].a_addr = {3'd0, cpu1_A[11:0]}; assign vs_pr_i[2].a_d = cpu1_Dout; assign vs_pr_i[2].a_we = cs_fgvram & ~cpu1_WR_n;
-assign vs_pr_i[2].b_addr = {3'd0, fg_raddr}; assign vs_pr_i[2].b_d = 8'd0; assign vs_pr_i[2].b_we = 1'b0;
+assign vs_pr_i[2].a_addr = {4'd0, cpu1_A[11:0]}; assign vs_pr_i[2].a_d = cpu1_Dout; assign vs_pr_i[2].a_we = cs_fgvram & ~cpu1_WR_n;
+assign vs_pr_i[2].b_addr = {4'd0, fg_raddr}; assign vs_pr_i[2].b_d = 8'd0; assign vs_pr_i[2].b_we = 1'b0;
 assign fg_vram_D = pr_o[2].a_q;
 assign fg_vram_rD = pr_o[2].b_q;
 
 wire [7:0] shared_ram_D_cpu1, shared_ram_D_cpu2;
-assign vs_pr_i[3].a_addr = {4'd0, hs_write ? {hs_bank, hs_address[7:0]} : cpu1_A[10:0]}; assign vs_pr_i[3].a_d = hs_write ? hs_data_in : cpu1_Dout; assign vs_pr_i[3].a_we = (cs_shared & ~cpu1_WR_n) | hs_write;
-assign vs_pr_i[3].b_addr = {4'd0, cpu2_A[10:0]}; assign vs_pr_i[3].b_d = cpu2_Dout; assign vs_pr_i[3].b_we = cs2_shared & ~cpu2_WR_n;
+assign vs_pr_i[3].a_addr = {5'd0, hs_write ? {hs_bank, hs_address[7:0]} : cpu1_A[10:0]}; assign vs_pr_i[3].a_d = hs_write ? hs_data_in : cpu1_Dout; assign vs_pr_i[3].a_we = (cs_shared & ~cpu1_WR_n) | hs_write;
+assign vs_pr_i[3].b_addr = {5'd0, cpu2_A[10:0]}; assign vs_pr_i[3].b_d = cpu2_Dout; assign vs_pr_i[3].b_we = cs2_shared & ~cpu2_WR_n;
 assign shared_ram_D_cpu1 = pr_o[3].a_q;
 assign shared_ram_D_cpu2 = pr_o[3].b_q;
 
 wire [7:0] hs_ram_q;
-assign pr_i[4].a_addr = {7'd0, cpu1_A[7:0]}; assign pr_i[4].a_d = cpu1_Dout; assign pr_i[4].a_we = cs_shared & ~cpu1_WR_n & (cpu1_A[10:8] == hs_bank);
-assign pr_i[4].b_addr = {7'd0, hs_address[7:0]}; assign pr_i[4].b_d = hs_data_in; assign pr_i[4].b_we = hs_write;
+assign pr_i[4].a_addr = {8'd0, cpu1_A[7:0]}; assign pr_i[4].a_d = cpu1_Dout; assign pr_i[4].a_we = cs_shared & ~cpu1_WR_n & (cpu1_A[10:8] == hs_bank);
+assign pr_i[4].b_addr = {8'd0, hs_address[7:0]}; assign pr_i[4].b_d = hs_data_in; assign pr_i[4].b_we = hs_write;
 assign hs_ram_q = pr_o[4].b_q;
 
-wire       ovg_cs;                // OVG-40c board RAMs (instance at the end of the file)
+wire       ovg_cs;
 wire [7:0] ovg_D;
 wire [4:0] ovg_r, ovg_g, ovg_b;
 
@@ -299,17 +249,14 @@ wire [7:0] system_inputs = sys_controls;
 
 assign hs_data_out = hs_ram_q;
 
-//------------------------------------------------ Zodiack CPU / audio board ---------------------------------------------------//
-
-// Main side: 2K RAM, latches, interrupt masks, DSW / inputs
-wire [7:0] ay_ioa;                         // AY port A output (audio NMI rate), from the AY below
+wire [7:0] ay_ioa;
 wire [7:0] zram_D;
-assign z_pr_i.a_addr = {4'd0, cpu1_A[10:0]}; assign z_pr_i.a_d = cpu1_Dout; assign z_pr_i.a_we = cs_zram & ~cpu1_WR_n;
-assign z_pr_i.b_addr = {4'd0, 11'd0}; assign z_pr_i.b_d = 8'd0; assign z_pr_i.b_we = 1'b0;
+assign z_pr_i.a_addr = {5'd0, cpu1_A[10:0]}; assign z_pr_i.a_d = cpu1_Dout; assign z_pr_i.a_we = cs_zram & ~cpu1_WR_n;
+assign z_pr_i.b_addr = {5'd0, 11'd0}; assign z_pr_i.b_d = 8'd0; assign z_pr_i.b_we = 1'b0;
 assign zram_D = pr_o[3].a_q;
 
-reg  [7:0] z_lat0 = 8'd0, z_lat1 = 8'd0;   // 0: main -> audio (pending raises the audio IRQ), 1: audio -> main
-reg        z_irq_en = 1'b0, z_flip_d = 1'b1, z_snmi_en = 1'b0;   // flip off until the game writes 7200
+reg  [7:0] z_lat0 = 8'd0, z_lat1 = 8'd0;
+reg        z_irq_en = 1'b0, z_flip_d = 1'b1, z_snmi_en = 1'b0;
 wire [7:0] zio_D = cpu1_A[7:0] == 8'h81 ? dip_sw[7:0] | zin2 : cpu1_A[7:0] == 8'h82 ? dip_sw[15:8] :
                    cpu1_A[7:0] == 8'h83 ? zin0 : cpu1_A[7:0] == 8'h84 ? zin1 : cpu1_A[7:0] == 8'h90 ? z_lat1 : 8'hFF;
 wire       z_wr1 = cen_cpu & zod & cpu1_mem_valid & ~cpu1_WR_n;
@@ -326,23 +273,19 @@ always_ff @(posedge clk_49m) begin
 			16'h8000: z_irq_en <= cpu1_Dout[0];
 			default: ;
 		endcase
-		// VBLANK: NMI (above, with the Vastar one) and IRQ held until the CPU acknowledges it
 		if (zod && vblk && !vblk_prev && z_irq_en) z_irq <= 1'b1;
 		else if (~cpu1_IORQ_n & ~cpu1_M1_n) z_irq <= 1'b0;
 		if (z_wr2 && cs2_zlat) z_lat1 <= cpu2_Dout;
 		if (z_wr2 && cs2_znmi) z_snmi_en <= cpu2_Dout[0];
-		if (cs2_zlat && ~cpu2_RD_n) z_pend <= 1'b0;      // reading the latch clears it (generic_latch_8)
+		if (cs2_zlat && ~cpu2_RD_n) z_pend <= 1'b0;
 	end
 end
 
-// Audio side: 1K RAM
 wire [7:0] zram2_D;
-assign pr_i[5].a_addr = {5'd0, cpu2_A[9:0]}; assign pr_i[5].a_d = cpu2_Dout; assign pr_i[5].a_we = cs2_zram & ~cpu2_WR_n;
-assign pr_i[5].b_addr = {5'd0, 10'd0}; assign pr_i[5].b_d = 8'd0; assign pr_i[5].b_we = 1'b0;
+assign pr_i[5].a_addr = {6'd0, cpu2_A[9:0]}; assign pr_i[5].a_d = cpu2_Dout; assign pr_i[5].a_we = cs2_zram & ~cpu2_WR_n;
+assign pr_i[5].b_addr = {6'd0, 10'd0}; assign pr_i[5].b_d = 8'd0; assign pr_i[5].b_we = 1'b0;
 assign zram2_D = pr_o[5].a_q;
 
-// Audio NMI: AY port A C0 = 4 per frame, E0 = 8 per frame, 00 = off; other values are
-// ignored. 264 lines per frame -> every 66 / 33 lines.
 reg [7:0] z_sfreq = 8'd0;
 reg [6:0] z_slines = 7'd0;
 always_ff @(posedge clk_49m) begin
@@ -356,16 +299,11 @@ always_ff @(posedge clk_49m) begin
 	end
 end
 
-//---------------------------------------------------- AY-3-8910 --------------------------------------------------------------//
-
 wire [7:0] ay_dout;
 wire [9:0] ay_sound;
 assign ay_0_i.rst_n = reset; assign ay_0_i.ce = cen_ay; assign ay_0_i.bdir = cs2_ay_addr | cs2_ay_wr; assign ay_0_i.bc1 = cs2_ay_addr | cs2_ay_rd;
 assign ay_0_i.din = cpu2_Dout; assign ay_0_i.ioa_in = dip_sw[7:0]; assign ay_0_i.iob_in = dip_sw[15:8];
 assign ay_dout = ay_0_o.dout; assign ay_sound = ay_0_o.sound; assign ay_ioa = ay_0_o.ioa_out;
-// jt49 sound output is UNSIGNED 10-bit (see jt49.v). Zero-extend it into the
-// signed 16-bit output frame: sign-extending the MSB instead wraps at
-// mid-scale (ay_sound >= 512) and produces audible buzzing/static on loud notes.
 assign sound = {1'b0, ay_sound, 5'd0};
 
 wire [7:0] cpu2_Din = (~cpu2_IORQ_n) ? (cs2_ay_rd ? ay_dout : 8'hFF) :
@@ -373,22 +311,16 @@ wire [7:0] cpu2_Din = (~cpu2_IORQ_n) ? (cs2_ay_rd ? ay_dout : 8'hFF) :
                       cs2_p2 ? p2_inputs : cs2_p1 ? p1_inputs :
                       cs2_system ? system_inputs : 8'hFF;
 
-//---------------------------------------------- Priority Register -----------------------------------------------------------//
-
 reg [2:0] priority_mode = 3'd0;
 always_ff @(posedge clk_49m) begin
 	if (!reset) priority_mode <= 0;
 	else if (cs_priority & ~cpu1_WR_n) priority_mode <= cpu1_Dout[2:0];
 end
 
-//----------------------------------------------- Graphics ROMs --------------------------------------------------------------//
-
 reg [12:0] fgtile_addr;
 wire [7:0] fgtile_D;
 assign fgtile_rom_a = fgtile_addr;
 assign fgtile_D = fgtile_rom_d;
-
-// BG tile ROMs, named by the layer they serve (load cross-mapping: rtl/vastar_dispatcher.sv)
 
 reg [12:0] bgtile0_addr;
 wire [7:0] bgtile0_D;
@@ -410,25 +342,9 @@ wire [7:0] prom_r_D, prom_g_D, prom_b_D, prom_unk_D;
 assign prom_r_D = prom_r_d;
 assign prom_g_D = prom_g_d;
 assign prom_b_D = prom_b_d;
-// UNKNOWN: tbp24s10.8n is read at a fixed address and its data is unused until its job is found (off colours reported,
-// esp. on CRT)
 assign prom_unk_a = 8'd0;
 assign prom_unk_D = prom_unk_d;
 
-//============================================= VIDEO RENDERING ==============================================//
-//
-// Line-buffer approach running at 49 MHz. During hblank (64 pixel clocks =
-// ~640 master clocks), we render all 256 pixels of the NEXT line into line
-// buffers for each layer. During active display, we read the buffers and
-// composite based on priority_mode, then PROM-lookup the palette.
-//
-// 2bpp tile format (planes {0,4}, 16 bytes/tile):
-//   byte_a = ROM[tile*16 + y], byte_b = ROM[tile*16 + y + 8]
-//   pixel[x] for x=0..3: {byte_a[x+4], byte_a[x]}
-//   pixel[x] for x=4..7: {byte_b[x-4+4], byte_b[x-4]}
-//============================================================================================================//
-
-// Line buffers (Double Buffered): 8-bit palette index per pixel (6-bit color + 2-bit pixel value)
 reg [7:0] fg_lb_0  [0:255];
 reg [7:0] fg_lb_1  [0:255];
 reg [7:0] bg0_lb_0 [0:255];
@@ -438,35 +354,21 @@ reg [7:0] bg1_lb_1 [0:255];
 reg [7:0] spr_lb_0 [0:255];
 reg [7:0] spr_lb_1 [0:255];
 
-reg lb_page; // 0 = render writes to _0, display reads from _1
-             // 1 = render writes to _1, display reads from _0
-             // Driven solely by the page-flip always_ff at end of this file.
+reg lb_page;
 
-// Render engine state machine (runs at 49 MHz during hblank)
 reg [4:0] rstate;
-reg [8:0] rx;  // render x pixel counter (0-255)
-// Latched tile info per fetch
+reg [8:0] rx;
 reg [9:0] r_tile_num;
 reg [5:0] r_color;
 reg       r_flipx, r_flipy;
 reg [7:0] r_byte_a, r_byte_b;
 reg [7:0] r_scroll;
-reg [2:0] r_layer; // 0=fg, 1=bg0, 2=bg1
+reg [2:0] r_layer;
 
-// Line being rendered into the buffers: one line ahead of the line currently on
-// screen (see the double-buffer page-flip, below). rline = 255 - rnext supplies
-// the vertical mirror for the ENTIRE render, so individual tiles need no
-// per-tile vertical flip beyond their own flipY bit.
-//
-// This line, the double-buffered line buffers, and the end-of-hblank page flip
-// (base_h_cnt == 383, in its own always_ff below) form a COUPLED TRIPLE that
-// eliminates line tearing. All three must move together: rnext must equal
-// v_cnt_rot with no +1, and the page flip must happen at end-of-hblank, not
-// mid-visible. Changing any one alone reintroduces a torn/duplicated line.
+// tear fix: rnext = v_cnt_rot (no +1), page flip at end of hblank; change all three together
 wire [8:0] rnext     = v_cnt_rot;
 wire [7:0] rline     = (8'd255 - rnext[7:0]);
 
-// Decode 2bpp pixel from byte pair
 function [1:0] pix2bpp;
     input [7:0] byt;
     input [1:0] x;
@@ -485,9 +387,8 @@ localparam S_BG1_ROMA = 5'd18, S_BG1_ROMB = 5'd19, S_BG1_DRAW = 5'd20;
 localparam S_SPR_INIT = 5'd21, S_SPR_RUN  = 5'd22;
 localparam S_DONE     = 5'd23;
 
-// Sprite engine sub-state
 reg [4:0] spr_state;
-reg [3:0] spr_idx;   // sprite index 0-15
+reg [3:0] spr_idx;
 reg [7:0] spr_y, spr_x, spr_code_raw, spr_attr_raw, spr_color_raw;
 reg [7:0] spr_code;
 reg [5:0] spr_color;
@@ -496,10 +397,9 @@ reg [4:0] spr_next_state;
 reg [4:0] spr_row;
 reg [3:0] spr_col;
 reg [7:0] spr_byte_a, spr_byte_b;
-reg       spr_rom_half; // 0=sprite0_D, 1=sprite1_D
+reg       spr_rom_half;
 reg       spr_reading_b;
 
-// Tile index helpers
 wire [4:0] rx_col = rx[7:3];
 wire [2:0] rx_fine = rx[2:0];
 reg wait_cycle;
@@ -511,9 +411,6 @@ always_ff @(posedge clk_49m) begin
 		wait_cycle <= 0;
 	end else if (rstate == S_IDLE) begin
 		wait_cycle <= 0;
-		// Trigger render at start of line (base_h_cnt==0). Render takes ~156 cen_pix
-		// ticks out of 384 available, so it always completes well before end-of-line.
-		// Page flip is handled separately at base_h_cnt==383 (see below).
 		if (cen_pix && base_h_cnt == 9'd0 && v_cnt_rot >= 9'd15 && v_cnt_rot < 9'd241) begin
 			rx <= 0;
 			rstate <= S_FG_CODE;
@@ -526,7 +423,6 @@ always_ff @(posedge clk_49m) begin
 			wait_cycle <= 1;
 		case (rstate)
 
-		//=== FG LAYER: read code, attr, color, then ROM bytes ===
 		S_FG_CODE: begin
 			fg_raddr <= 12'hC00 + {2'b00, rline[7:3], rx_col};
 			rstate <= S_FG_ATTR;
@@ -567,9 +463,6 @@ always_ff @(posedge clk_49m) begin
 				reg [1:0] pval;
 				ba = r_byte_a;
 				bb = fgtile_D;
-				// Left 4 pixels from ba, right 4 from bb
-				// Normal: px 0-3 from ba, 4-7 from bb
-				// FlipX:  px 0-3 from bb reversed, 4-7 from ba reversed
 				if (r_flipx) begin
 					if (lb_page) begin
 						fg_lb_1[rx+7] <= {r_color, ba[7], ba[3]};
@@ -620,9 +513,7 @@ always_ff @(posedge clk_49m) begin
 				rstate <= S_FG_CODE;
 		end
 
-		//=== BG0 LAYER: scroll, code, attr, color, ROM ===
 		S_BG0_SCR: begin
-			// Read scroll value from fgvram[0x3C0 + col]
 			fg_raddr <= 12'h7C0 + {7'd0, rx_col};
 			rstate <= S_BG0_CODE;
 		end
@@ -631,7 +522,7 @@ always_ff @(posedge clk_49m) begin
 			begin
 				reg [7:0] sy;
 				sy = rline + fg_vram_rD;
-				bg0_raddr <= {2'b10, sy[7:3], rx_col}; // code @ +0x800
+				bg0_raddr <= {2'b10, sy[7:3], rx_col};
 			end
 			rstate <= S_BG0_ATTR;
 		end
@@ -640,7 +531,7 @@ always_ff @(posedge clk_49m) begin
 			begin
 				reg [7:0] sy;
 				sy = rline + r_scroll;
-				bg0_raddr <= {2'b00, sy[7:3], rx_col}; // attr @ +0x000
+				bg0_raddr <= {2'b00, sy[7:3], rx_col};
 			end
 			rstate <= S_BG0_COL;
 		end
@@ -651,7 +542,7 @@ always_ff @(posedge clk_49m) begin
 			begin
 				reg [7:0] sy;
 				sy = rline + r_scroll;
-				bg0_raddr <= {2'b11, sy[7:3], rx_col}; // color @ +0xC00
+				bg0_raddr <= {2'b11, sy[7:3], rx_col};
 			end
 			rstate <= S_BG0_ROMA;
 		end
@@ -732,7 +623,6 @@ always_ff @(posedge clk_49m) begin
 				rstate <= S_BG0_SCR;
 		end
 
-		//=== BG1 LAYER: same pattern as BG0 but uses bg1_vram and bgtile1_rom ===
 		S_BG1_SCR: begin
 			fg_raddr <= 12'h7E0 + {7'd0, rx_col};
 			rstate <= S_BG1_CODE;
@@ -843,12 +733,7 @@ always_ff @(posedge clk_49m) begin
 				rstate <= S_BG1_SCR;
 		end
 
-		//=== SPRITES ===
-		// 16 sprites total (2 banks × 8), data in FG VRAM at fixed offsets.
-		// Bank 0: rambase=0x030, tilebase=0x80. Bank 1: rambase=0x010, tilebase=0x00.
-		// Y/Col @ fgvram[rambase+0x000], Attr @ fgvram[rambase+0x400], Code/X @ fgvram[rambase+0x800]
 		S_SPR_INIT: begin
-			// Clear sprite buffer
 			if (lb_page) begin
 				for (integer i = 0; i < 256; i = i + 1) spr_lb_1[i] <= 8'd0;
 			end else begin
@@ -860,11 +745,8 @@ always_ff @(posedge clk_49m) begin
 		end
 
 		S_SPR_RUN: begin
-			// Sprite sub-state machine
 			case (spr_state)
 			5'd0: begin
-				// Compute rambase: idx 0-7 = bank0 (0x030), idx 8-15 = bank1 (0x010)
-				// Read Y: fgvram[rambase + (idx&7)*2]
 				begin
 					reg [11:0] rambase;
 					rambase = (spr_idx < 8) ? 12'h430 : 12'h410;
@@ -875,7 +757,6 @@ always_ff @(posedge clk_49m) begin
 			end
 			5'd1: begin
 				spr_y <= fg_vram_rD;
-				// Read Color: fgvram[rambase + (idx&7)*2 + 1]
 				begin
 					reg [11:0] rambase;
 					rambase = (spr_idx < 8) ? 12'h430 : 12'h410;
@@ -886,7 +767,6 @@ always_ff @(posedge clk_49m) begin
 			end
 			5'd2: begin
 				spr_color <= fg_vram_rD[5:0];
-				// Read Attr: fgvram[rambase + 0x400 + (idx&7)*2]
 				begin
 					reg [11:0] rambase;
 					rambase = (spr_idx < 8) ? 12'h430 : 12'h410;
@@ -897,7 +777,6 @@ always_ff @(posedge clk_49m) begin
 			end
 			5'd3: begin
 				spr_attr_raw <= fg_vram_rD;
-				// Read Code/X byte 0: fgvram[rambase + 0x800 + (idx&7)*2]
 				begin
 					reg [11:0] rambase;
 					rambase = (spr_idx < 8) ? 12'h430 : 12'h410;
@@ -908,7 +787,6 @@ always_ff @(posedge clk_49m) begin
 			end
 			5'd4: begin
 				spr_code_raw <= fg_vram_rD;
-				// Read X position: fgvram[rambase + 0x800 + (idx&7)*2 + 1]
 				begin
 					reg [11:0] rambase;
 					rambase = (spr_idx < 8) ? 12'h430 : 12'h410;
@@ -919,15 +797,12 @@ always_ff @(posedge clk_49m) begin
 			end
 			5'd5: begin
 				spr_x <= fg_vram_rD;
-				// Decode sprite
 				begin
 					reg [7:0] code;
 					reg [7:0] tilebase;
-					tilebase = (spr_idx < 8) ? 8'd128 : 8'd0; // 0x80/2=64 for bank0, 0 for bank1
+					tilebase = (spr_idx < 8) ? 8'd128 : 8'd0;
 					code = {spr_attr_raw[0], spr_code_raw[7:2]} + tilebase;
 					spr_code <= code;
-					// Per-sprite flip bits are inverted when the board is flipped, gated on
-					// game_flip (see the flip_screen declaration above — NOT rot_flip, NOT crt_flip).
 					spr_flipy <= spr_code_raw[0] ^ game_flip;
 					spr_flipx <= spr_code_raw[1] ^ game_flip;
 					spr_dbl <= spr_attr_raw[3];
@@ -935,7 +810,6 @@ always_ff @(posedge clk_49m) begin
 				spr_state <= 6;
 			end
 			5'd6: begin
-				// Check if sprite is on this line
 				begin
 					reg [7:0] sy, sprite_height;
 					reg [8:0] local_y;
@@ -943,50 +817,27 @@ always_ff @(posedge clk_49m) begin
 					sprite_height = spr_dbl ? 8'd32 : 8'd16;
 					local_y = {1'b0, rline} - {1'b0, sy};
 					if (local_y[8:0] < {1'b0, sprite_height}) begin
-						// Sprite is on this line — start pixel rendering
 						spr_row <= local_y[4:0];
 						spr_col <= 0;
 						spr_reading_b <= 0;
-						spr_state <= 7; // fetch ROM byte_a
+						spr_state <= 7;
 					end else begin
-						// Not on this line, next sprite
 						if (spr_idx == 4'd15) rstate <= S_DONE;
 						else begin spr_idx <= spr_idx + 1; spr_state <= 0; end
 					end
 				end
 			end
 			5'd7: begin
-				// Set sprite ROM address for current row, left half (byte_a)
-				// 16x16 sprite layout (64 bytes/sprite, 4 column-groups x 8 rows x 2 row-blocks):
-				// row 0-7:  base + row                 (byte_a for cols 0-3)
-				//           base + row + 8             (byte_b for cols 4-7)
-				//           base + row + 16            (cols 8-11)
-				//           base + row + 24            (cols 12-15)
-				// row 8-15: base + 32 + (row-8)        etc. (second row-block, offset +32)
-				// Each byte packs 4 pixels x 2 bitplanes (see pix2bpp / the {byte_a[bx+4],byte_a[bx]}
-				// decode below): bitplane 0 in bits [3:0], bitplane 1 in bits [7:4].
-				// Double-height variant: code/2, 128 bytes/sprite (row_base folds in the extra bit).
 				begin
 					reg [13:0] base;
 					reg [4:0] erow;
 					reg [3:0] quarter;
 					erow = spr_flipy ? ((spr_dbl ? 5'd31 : 5'd15) - spr_row) : spr_row;
 					if (spr_dbl)
-						base = {spr_code[7:1], 7'd0}; // code/2 * 128
+						base = {spr_code[7:1], 7'd0};
 					else
-						base = {spr_code, 6'd0}; // code * 64
-					// quarter (which 4-pixel group, 0-3) must be reversed together with bx
-					// (below) whenever flipx is set. Reversing only bx mirrors pixels within
-					// each 4-pixel group but leaves the groups themselves in source order —
-					// a 4-pixel-granular scramble that is only visible on sprites that actually
-					// set flipx (diagonals reusing one tile via the flip bits; cardinal-direction
-					// sprites use their own tiles with the bit clear). flipy needs no equivalent
-					// fixup: erow = 15-spr_row already reverses erow[3] (which 8-row block) and
-					// erow[2:0] together in one step.
+						base = {spr_code, 6'd0};
 					quarter = spr_flipx ? (2'd3 - spr_col[3:2]) : spr_col[3:2];
-					// Byte offset within sprite: row_base + quarter*8
-					// row_base = (erow < 8) ? erow : 32 + (erow-8)  for 16x16
-					// For 32 tall: (erow < 8) ? erow : (erow < 16) ? 32+(erow-8) : (erow < 24) ? 64+(erow-16) : 96+(erow-24)
 					begin
 						reg [6:0] row_base;
 						reg [13:0] full_addr;
@@ -1003,26 +854,16 @@ always_ff @(posedge clk_49m) begin
 				spr_state <= 10;
 			end
 			5'd8: begin
-				// ROM data ready — latch
 				spr_byte_a <= spr_rom_half ? sprite1_D : sprite0_D;
 				spr_state <= 9;
 			end
 			5'd9: begin
-				// Draw 4 pixels from this quarter
 				begin
 					reg [1:0] pval;
 					reg [2:0] bx;
 					reg [7:0] xpos;
 					bx = spr_flipx ? spr_col[1:0] : (3'd3 - spr_col[1:0]);
 					pval = {spr_byte_a[bx + 4], spr_byte_a[bx]};
-					// Sprite mirroring is deliberately split into two independent jobs:
-					// xpos here mirrors only the sprite's ORIGIN (placement on screen), while
-					// spr_flipx/spr_flipy (decoded above) handle internal pixel order. Combining
-					// both into a single `255 - (origin + index)` expression is wrong: that form
-					// mirrors placement AND reverses internal order in one step and the two can
-					// no longer be adjusted independently. Sprite width is always 16 (spr_col
-					// wraps at 15 even when spr_dbl doubles the height), so mirroring source cols
-					// spr_x..spr_x+15 gives mirrored span (240-spr_x)..(255-spr_x) — hence the 240.
 					xpos = rot_flip ? ((8'd240 - spr_x) + {4'd0, spr_col}) : (spr_x + {4'd0, spr_col});
 					if (lb_page) begin
 						if (pval != 2'd0 && spr_lb_1[xpos] == 8'd0)
@@ -1033,17 +874,15 @@ always_ff @(posedge clk_49m) begin
 					end
 				end
 				if (spr_col == 4'd15) begin
-					// Done with this sprite
 					if (spr_idx == 4'd15) rstate <= S_DONE;
 					else begin spr_idx <= spr_idx + 1; spr_state <= 0; end
 				end else begin
 					spr_col <= spr_col + 1;
-					// Every 4 pixels, need new ROM fetch
 					if (spr_col[1:0] == 2'd3) spr_state <= 7;
 				end
 			end
 			5'd10: begin
-				spr_state <= 8;   // ROM data now valid
+				spr_state <= 8;
 			end
 			5'd11: begin
 				spr_state <= spr_next_state;
@@ -1061,11 +900,7 @@ always_ff @(posedge clk_49m) begin
 	end
 end
 
-// Double-buffer page flip — fires at end-of-line (base_h_cnt==383, fully in hblank),
-// only on lines that had a render. Render completes ~halfway through the line,
-// so it's guaranteed done well before this point. Sole driver of lb_page.
-// Part of the tear-fix coupled triple documented at rnext/rline above — do not
-// move this flip earlier (e.g. mid-visible) without also revisiting that note.
+// part of the tear-fix triple (rnext / rline): do not change alone
 always_ff @(posedge clk_49m) begin
 	if (!reset) begin
 		lb_page <= 1'b0;
@@ -1074,7 +909,6 @@ always_ff @(posedge clk_49m) begin
 	end
 end
 
-//--- Display compositing ---
 wire [7:0] disp_x = 8'd255 - h_cnt_rot[7:0];
 wire [7:0] fg_pix  = lb_page ? fg_lb_0[disp_x]  : fg_lb_1[disp_x];
 wire [7:0] bg0_pix = lb_page ? bg0_lb_0[disp_x] : bg0_lb_1[disp_x];
@@ -1089,32 +923,32 @@ wire spr_opaque = (spr_pix[1:0] != 2'd0);
 reg [7:0] final_pixel;
 always_comb begin
 	case (priority_mode)
-	3'd0: begin // BG0(opaque) → sprites → BG1 → FG
+	3'd0: begin
 		if (fg_opaque)       final_pixel = fg_pix;
 		else if (bg1_opaque) final_pixel = bg1_pix;
 		else if (spr_opaque) final_pixel = spr_pix;
 		else                 final_pixel = bg0_pix;
 	end
-	3'd1: begin // BG0(opaque) → BG1 → sprites → FG
+	3'd1: begin
 		if (fg_opaque)       final_pixel = fg_pix;
 		else if (spr_opaque) final_pixel = spr_pix;
 		else if (bg1_opaque) final_pixel = bg1_pix;
 		else                 final_pixel = bg0_pix;
 	end
-	3'd2: begin // BG0(opaque) → sprites → BG0(transp) → BG1 → FG
+	3'd2: begin
 		if (fg_opaque)       final_pixel = fg_pix;
 		else if (bg1_opaque) final_pixel = bg1_pix;
 		else if (bg0_opaque) final_pixel = bg0_pix;
 		else if (spr_opaque) final_pixel = spr_pix;
 		else                 final_pixel = bg0_pix;
 	end
-	3'd3: begin // BG0 → BG1 → FG → sprites
+	3'd3: begin
 		if (spr_opaque)      final_pixel = spr_pix;
 		else if (fg_opaque)  final_pixel = fg_pix;
 		else if (bg1_opaque) final_pixel = bg1_pix;
 		else                 final_pixel = bg0_pix;
 	end
-	3'd4: begin // FG(opaque) → sprites → BG0 → BG1
+	3'd4: begin
 		if (bg1_opaque)      final_pixel = bg1_pix;
 		else if (bg0_opaque) final_pixel = bg0_pix;
 		else if (spr_opaque) final_pixel = spr_pix;
@@ -1124,20 +958,12 @@ always_comb begin
 	endcase
 end
 
-// PROM palette lookup (combinational — no pipeline delay)
 wire [7:0] prom_addr = (hblk | vblk) ? 8'd0 : final_pixel;
 
-// Scale 4-bit PROM output to 5-bit for MiSTer
 assign red   = ovg ? ovg_r : {prom_r_D[3:0], prom_r_D[3]};
 assign green = ovg ? ovg_g : {prom_g_D[3:0], prom_g_D[3]};
 assign blue  = ovg ? ovg_b : {prom_b_D[3:0], prom_b_D[3]};
 
-//------------------------------------------------ Orca OVG-40c video board ---------------------------------------------------//
-
-// Same line timing and page flip as the Vastar renderer, so its output lines up with the same syncs. It draws
-// the bitmap the other way round from the Vastar board (line v, column h rather than 255 - v / 255 - h):
-// Dog Fight is ROT270 where Vastar is ROT90, through the same CCW screen rotation. The Bounty (ROT180, horizontal)
-// uses the Vastar board's 255 - v / 255 - h with no screen rotation.
 Vastar_OVG40C ovg_pcb
 (
 	.clk_49m(clk_49m),
@@ -1163,7 +989,6 @@ Vastar_OVG40C ovg_pcb
 	.obj_o(pr_o[0]), .fg_o(pr_o[1]), .bg_o(pr_o[2]), .lb_o(pr_o[6])
 );
 
-// pooled CPU inputs and the colour PROM address, assigned after every signal they read is declared
 assign prom_a = prom_addr;
 assign z80_i[0].reset_n = reset; assign z80_i[0].ce = cen_cpu & ~pause; assign z80_i[0].int_n = ~z_irq; assign z80_i[0].nmi_n = ~cpu1_nmi;
 assign z80_i[0].di = cpu1_Din;
